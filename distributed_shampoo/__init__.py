@@ -37,6 +37,7 @@ from distributed_shampoo.shampoo_types import (
     AmortizedPreconditionerConfig,
     DDPDistributedConfig,
     DefaultEigenvalueCorrectedShampooConfig,
+    DefaultKatieConfig,
     DefaultShampooConfig,
     DefaultSignDescentPreconditionerConfig,
     DefaultSingleDeviceDistributedConfig,
@@ -50,6 +51,7 @@ from distributed_shampoo.shampoo_types import (
     FullyShardDistributedConfig,
     HSDPDistributedConfig,
     HybridShardDistributedConfig,
+    KatiePreconditionerConfig,
     PreconditionerConfig,
     RMSpropPreconditionerConfig,
     RootInvShampooPreconditionerConfig,
@@ -87,6 +89,8 @@ __all__ = [
     "EigenvalueCorrectedShampooPreconditionerConfig",  # Based on `AmortizedPreconditionerConfig`.
     "DefaultEigenvalueCorrectedShampooConfig",  # Default `EigenvalueCorrectedShampooPreconditionerConfig` using `EighEigendecompositionConfig`.
     "DefaultSOAPConfig",  # Default `EigenvalueCorrectedShampooPreconditionerConfig` using `QREigendecompositionConfig`.
+    "KatiePreconditionerConfig",  # Based on `ShampooPreconditionerConfig`.
+    "DefaultKatieConfig",  # Default `KatiePreconditionerConfig`.
     "SpectralDescentPreconditionerConfig",  # Based on `PreconditionerConfig`.
     "SignDescentPreconditionerConfig",  # Based on `PreconditionerConfig`.
     "DefaultSpectralDescentPreconditionerConfig",  # Default `SpectralDescentPreconditionerConfig` using `NewtonSchulzOrthogonalizationConfig`.

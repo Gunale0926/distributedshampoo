@@ -36,6 +36,9 @@ from distributed_shampoo.distributor.shampoo_hybrid_shard_distributor import (
 from distributed_shampoo.preconditioner.adagrad_preconditioner_list import (
     AdagradPreconditionerList,
 )
+from distributed_shampoo.preconditioner.katie_preconditioner_list import (
+    KatiePreconditionerList,
+)
 from distributed_shampoo.preconditioner.matrix_functions_types import (
     EigendecompositionConfig,
     PseudoInverseConfig,
@@ -81,6 +84,7 @@ from distributed_shampoo.shampoo_types import (
     GRAFTING_PRECONDITIONER_LIST,
     HSDPDistributedConfig,
     HybridShardDistributedConfig,
+    KatiePreconditionerConfig,
     LR,
     MASKED_BLOCKED_GRADS,
     MASKED_BLOCKED_PARAMS,
@@ -632,6 +636,19 @@ class DistributedShampoo(torch.optim.Optimizer):
                     preconditioner_config=preconditioner_config,
                     state=self.state,
                     block_info_list=state_lists[DISTRIBUTOR].local_block_info_list,
+                    beta2=group[BETAS][1],
+                    weighting_factor=1.0
+                    if group[BETAS][1] == 1.0
+                    else 1 - group[BETAS][1],
+                    epsilon=group[EPSILON],
+                    use_bias_correction=group[USE_BIAS_CORRECTION],
+                )
+            case KatiePreconditionerConfig():
+                return KatiePreconditionerList(
+                    block_list=state_lists[DISTRIBUTOR].local_blocked_params,
+                    state=self.state,
+                    block_info_list=state_lists[DISTRIBUTOR].local_block_info_list,
+                    preconditioner_config=preconditioner_config,
                     beta2=group[BETAS][1],
                     weighting_factor=1.0
                     if group[BETAS][1] == 1.0
