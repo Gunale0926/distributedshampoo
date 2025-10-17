@@ -36,9 +36,6 @@ from distributed_shampoo.distributor.shampoo_hybrid_shard_distributor import (
 from distributed_shampoo.preconditioner.adagrad_preconditioner_list import (
     AdagradPreconditionerList,
 )
-from distributed_shampoo.preconditioner.katie_preconditioner_list import (
-    KatiePreconditionerList,
-)
 from distributed_shampoo.preconditioner.matrix_functions_types import (
     EigendecompositionConfig,
     PseudoInverseConfig,
@@ -50,6 +47,7 @@ from distributed_shampoo.preconditioner.sgd_preconditioner_list import (
 from distributed_shampoo.preconditioner.shampoo_preconditioner_list import (
     EigendecomposedShampooPreconditionerList,
     EigenvalueCorrectedShampooPreconditionerList,
+    KatiePreconditionerList,
     RootInvShampooPreconditionerList,
 )
 from distributed_shampoo.preconditioner.sign_descent_preconditioner_list import (
@@ -623,6 +621,7 @@ class DistributedShampoo(torch.optim.Optimizer):
                 RootInvShampooPreconditionerConfig()
                 | EigendecomposedShampooPreconditionerConfig()
                 | EigenvalueCorrectedShampooPreconditionerConfig()
+                | KatiePreconditionerConfig()
             ):
                 preconditioner_config_to_list_cls: dict[
                     type[PreconditionerConfig], Callable[..., PreconditionerList]
@@ -630,25 +629,13 @@ class DistributedShampoo(torch.optim.Optimizer):
                     RootInvShampooPreconditionerConfig: RootInvShampooPreconditionerList,
                     EigendecomposedShampooPreconditionerConfig: EigendecomposedShampooPreconditionerList,
                     EigenvalueCorrectedShampooPreconditionerConfig: EigenvalueCorrectedShampooPreconditionerList,
+                    KatiePreconditionerConfig: KatiePreconditionerList,
                 }
                 return preconditioner_config_to_list_cls[type(preconditioner_config)](
                     block_list=state_lists[DISTRIBUTOR].local_blocked_params,
                     preconditioner_config=preconditioner_config,
                     state=self.state,
                     block_info_list=state_lists[DISTRIBUTOR].local_block_info_list,
-                    beta2=group[BETAS][1],
-                    weighting_factor=1.0
-                    if group[BETAS][1] == 1.0
-                    else 1 - group[BETAS][1],
-                    epsilon=group[EPSILON],
-                    use_bias_correction=group[USE_BIAS_CORRECTION],
-                )
-            case KatiePreconditionerConfig():
-                return KatiePreconditionerList(
-                    block_list=state_lists[DISTRIBUTOR].local_blocked_params,
-                    state=self.state,
-                    block_info_list=state_lists[DISTRIBUTOR].local_block_info_list,
-                    preconditioner_config=preconditioner_config,
                     beta2=group[BETAS][1],
                     weighting_factor=1.0
                     if group[BETAS][1] == 1.0

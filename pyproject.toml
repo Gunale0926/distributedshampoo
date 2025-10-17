@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "torch-shampoo"
 version = "1.0.0"
 dependencies = [
+    "numpy>=2.3.4",
     "torch>=2.8.0",
 ]
 requires-python = ">=3.12"

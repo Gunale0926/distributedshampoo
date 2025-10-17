@@ -313,6 +313,47 @@ DefaultShampooConfig = RootInvShampooPreconditionerConfig()
 
 
 @dataclass(kw_only=True)
+class KatiePreconditionerConfig(ShampooPreconditionerConfig):
+    """Configuration for Katie (Kronecker and Diagonal Sequential Preconditioner) computation.
+
+    Katie combines both Kronecker factorization (like Shampoo) and diagonal preconditioning (like Adam)
+    in a sequential manner. It first applies Kronecker preconditioning, then applies diagonal preconditioning.
+
+    Attributes:
+        amortized_computation_config (RootInvConfig): Configuration for the inverse-root computation of Kronecker factors. (Default: DefaultEigenConfig)
+        num_tolerated_failed_amortized_computations (int): Number of failed amortized computations to tolerate before raising an error. (Default: 3)
+        factor_matrix_dtype (torch.dtype): Data type for Kronecker factor matrices. (Default: torch.float32)
+        inverse_exponent_override (dict[int, dict[int, float] | float]): The inverse_exponent_override attribute allows for customizing the inverse exponent used in Kronecker factor computation.
+            Uses the same format as RootInvShampooPreconditionerConfig. (Default: {})
+        beta2 (float): Exponential moving average factor for diagonal second moment (element-wise preconditioner). (Default: 0.999)
+        diagonal_epsilon (float): Epsilon term for regularizing the diagonal preconditioner. (Default: 1e-8)
+        kronecker_epsilon (float): Epsilon term for regularizing the Kronecker preconditioner. (Default: 1e-2)
+
+    """
+
+    amortized_computation_config: RootInvConfig = field(
+        default_factory=lambda: DefaultEigenConfig
+    )
+    beta2: float = 0.999
+    diagonal_epsilon: float = 1e-8
+    kronecker_epsilon: float = 1e-2
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not 0.0 < self.beta2 <= 1.0:
+            raise ValueError(
+                f"Invalid beta2 parameter: {self.beta2}. Must be in (0.0, 1.0]."
+            )
+        if not self.diagonal_epsilon > 0.0:
+            raise ValueError(f"Invalid diagonal_epsilon value: {self.diagonal_epsilon}. Must be > 0.0.")
+        if not self.kronecker_epsilon > 0.0:
+            raise ValueError(f"Invalid kronecker_epsilon value: {self.kronecker_epsilon}. Must be > 0.0.")
+
+
+DefaultKatieConfig = KatiePreconditionerConfig()
+
+
+@dataclass(kw_only=True)
 class EigendecomposedShampooPreconditionerConfig(ShampooPreconditionerConfig):
     """Configuration for Shampoo preconditioner computation with caching of the eigendecomposed factor matrices.
 
@@ -366,61 +407,6 @@ class EigendecomposedShampooPreconditionerConfig(ShampooPreconditionerConfig):
     )
     factor_matrix_eigenvectors_dtype: torch.dtype = torch.float32
     factor_matrix_eigenvalues_dtype: torch.dtype = torch.float32
-
-
-@dataclass(kw_only=True)
-class KatiePreconditionerConfig(ShampooPreconditionerConfig):
-    """Configuration for Katie (Kronecker and Diagonal Sequential Preconditioner) computation.
-
-    Katie combines Kronecker factorization (Shampoo-like) with diagonal preconditioning (Adam-like) sequentially.
-    The algorithm applies Kronecker preconditioning first, then applies diagonal preconditioning element-wise.
-
-    Attributes:
-        amortized_computation_config (RootInvConfig): Configuration for the inverse-root computation of Kronecker factors. (Default: DefaultEigenConfig)
-        num_tolerated_failed_amortized_computations (int): Number of failed amortized computations to tolerate before raising an error. (Default: 3)
-        factor_matrix_dtype (torch.dtype): Data type for Kronecker factor matrices. (Default: torch.float32)
-        inv_factor_matrix_dtype (torch.dtype): Data type for inverse Kronecker factor matrices. (Default: torch.float32)
-        diagonal_dtype (torch.dtype): Data type for the diagonal second moment (Adam-like) preconditioner. (Default: torch.float32)
-        inverse_exponent_override (dict[int, dict[int, float] | float]): Customizes the inverse exponent for Kronecker factors.
-            The keys represent the tensor order, and values are either dicts with dimension indices or a single float.
-            Default exponent is 1/(2*max(o,1)) where o is the tensor order. (Default: {})
-        beta2 (float): Exponential moving average factor for the diagonal second moment. (Default: 0.999)
-        diagonal_epsilon (float): Epsilon term for regularizing the diagonal second moment square-root. (Default: 1e-8)
-        kronecker_epsilon (float): Epsilon term for regularizing Kronecker factor matrices to ensure positive definiteness. (Default: 1e-12)
-
-    Note:
-        - The Kronecker power p in the pseudocode is controlled by inverse_exponent_override. For example,
-          setting inverse_exponent_override={2: 0.25} means p=0.25 for 2D tensors.
-        - The first moment beta1 parameter is set by betas[0] in DistributedShampoo's hyperparameters.
-        - use_bias_correction in DistributedShampoo controls bias correction for both moments.
-    """
-
-    amortized_computation_config: RootInvConfig = field(
-        default_factory=lambda: DefaultEigenConfig
-    )
-    inv_factor_matrix_dtype: torch.dtype = torch.float32
-    diagonal_dtype: torch.dtype = torch.float32
-    beta2: float = 0.999
-    diagonal_epsilon: float = 1e-8
-    kronecker_epsilon: float = 1e-12
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if not 0.0 < self.beta2 <= 1.0:
-            raise ValueError(
-                f"Invalid beta2 parameter: {self.beta2}. Must be in (0.0, 1.0]."
-            )
-        if not self.diagonal_epsilon > 0.0:
-            raise ValueError(
-                f"Invalid diagonal_epsilon value: {self.diagonal_epsilon}. Must be > 0.0."
-            )
-        if not self.kronecker_epsilon > 0.0:
-            raise ValueError(
-                f"Invalid kronecker_epsilon value: {self.kronecker_epsilon}. Must be > 0.0."
-            )
-
-
-DefaultKatieConfig = KatiePreconditionerConfig()
 
 
 @dataclass(kw_only=True)

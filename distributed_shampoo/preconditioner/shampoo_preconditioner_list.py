@@ -38,6 +38,7 @@ from distributed_shampoo.shampoo_types import (
     AmortizedPreconditionerConfig,
     EigendecomposedShampooPreconditionerConfig,
     EigenvalueCorrectedShampooPreconditionerConfig,
+    KatiePreconditionerConfig,
     PreconditionerValueError,
     RootInvShampooPreconditionerConfig,
 )
@@ -989,17 +990,216 @@ class EigenvalueCorrectedShampooKroneckerFactorsUnwrapped(
         }
 
 
+@dataclass(kw_only=True)
+class KatieKroneckerFactorsState(BaseShampooKroneckerFactorsState):
+    """Katie Kronecker factors and diagonal preconditioner (wrapped) for storing in the optimizer state.
+
+    Attributes:
+        inv_factor_matrices (tuple[Tensor, ...]): A tuple of tensors representing the inverse Kronecker factor matrices.
+        diagonal_preconditioner_list (tuple[Tensor, ...]): A tuple of tensors representing the element-wise second moment (diagonal preconditioner).
+        factor_matrices (tuple[Tensor, ...]): A tuple of tensors representing the Kronecker factor matrices.
+        factor_matrix_indices (tuple[str, ...]): A tuple of strings representing the indices of the factor matrices.
+    """
+
+    inv_factor_matrices: tuple[Tensor, ...]
+    diagonal_preconditioner_list: tuple[Tensor, ...]
+
+    @classmethod
+    def from_block(cls, **kwargs: Any) -> "KatieKroneckerFactorsState":
+        """
+        Creates a KatieKroneckerFactorsState object for a given block.
+
+        Args:
+            block_info (BlockInfo): Information about the block, including methods to allocate tensors.
+            preconditioner_config (KatiePreconditionerConfig): Configuration for the Katie preconditioner.
+            preconditioned_dims (tuple[int, ...]): Dimensions for which the Kronecker factors are preconditioned.
+            dims (tuple[int, ...]): Dimensions of the block.
+
+        Returns:
+            kronecker_factors_state (KatieKroneckerFactorsState): An instance of KatieKroneckerFactorsState.
+        """
+        block_info: BlockInfo = kwargs["block_info"]
+        preconditioner_config: KatiePreconditionerConfig = kwargs[
+            "preconditioner_config"
+        ]
+        preconditioned_dims: tuple[int, ...] = kwargs["preconditioned_dims"]
+        dims: tuple[int, ...] = kwargs["dims"]
+
+        return cls(
+            **asdict(
+                BaseShampooKroneckerFactorsState.from_block(
+                    block_info=block_info,
+                    factor_matrix_dtype=preconditioner_config.factor_matrix_dtype,
+                    preconditioned_dims=preconditioned_dims,
+                )
+            ),
+            # Initialize inv_factor_matrices as identity matrices.
+            inv_factor_matrices=tuple(
+                block_info.allocate_eye_tensor(
+                    n=dim,
+                    dtype=preconditioner_config.factor_matrix_dtype,
+                    device=block_info.param.device,
+                )
+                for dim in preconditioned_dims
+            ),
+            # Initialize diagonal preconditioner for each block as zeros.
+            diagonal_preconditioner_list=tuple(
+                [
+                    block_info.allocate_zeros_tensor(
+                        size=tuple(dims),
+                        dtype=block_info.param.dtype,
+                        device=block_info.param.device,
+                    )
+                ]
+            ),
+        )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert len(self.factor_matrices) == len(self.inv_factor_matrices)
+        assert len(self.diagonal_preconditioner_list) == 1
+
+
+@dataclass(kw_only=True)
+class KatieKroneckerFactorsUnwrapped(BaseShampooKroneckerFactorsUnwrapped):
+    """Katie Kronecker factors and diagonal preconditioner (unwrapped) for operations during optimizer computation.
+
+    This class implements Katie, which combines Kronecker factorization (like Shampoo) with
+    diagonal preconditioning (like Adam) in a sequential manner.
+
+    Attributes:
+        inv_factor_matrices (tuple[Tensor, ...]): Inverse Kronecker factor matrices for preconditioning.
+        diagonal_preconditioner_list (tuple[Tensor, ...]): Element-wise second moment for diagonal preconditioning.
+        factor_matrices (tuple[Tensor, ...]): Kronecker factor matrices accumulated during optimization.
+        factor_matrix_indices (tuple[str, ...]): Indices of the factor matrices for identification.
+        roots (tuple[float, ...]): Inverse exponent roots for Kronecker factor matrices.
+        amortized_computation_config (RootInvConfig): Configuration for matrix inverse root computation.
+        epsilon (float): Epsilon for numerical stability in Kronecker preconditioner.
+        num_tolerated_failed_amortized_computations (int): Maximum tolerated failed computations.
+        _failed_amortized_computation_counter (int): Counter for failed computations.
+    """
+
+    inv_factor_matrices: tuple[Tensor, ...]
+    diagonal_preconditioner_list: tuple[Tensor, ...]
+
+    @classmethod
+    def from_kronecker_factors_state(
+        cls,
+        unwrapped_tensor_getter: Callable[[Tensor], Tensor],
+        kronecker_factors_state: BaseShampooKroneckerFactorsState,
+        roots: tuple[float, ...],
+        amortized_computation_config: RootInvConfig,
+        epsilon: float,
+        num_tolerated_failed_amortized_computations: int,
+    ) -> "KatieKroneckerFactorsUnwrapped":
+        """
+        Constructs a KatieKroneckerFactorsUnwrapped object from the given Kronecker factors state.
+
+        Args:
+            unwrapped_tensor_getter (Callable[[Tensor], Tensor]): Function to unwrap tensors.
+            kronecker_factors_state (BaseShampooKroneckerFactorsState): State containing factor matrices.
+            roots (tuple[float, ...]): Inverse exponent roots for Kronecker factors.
+            amortized_computation_config (RootInvConfig): Configuration for matrix inverse root computation.
+            epsilon (float): Epsilon for numerical stability.
+            num_tolerated_failed_amortized_computations (int): Maximum tolerated failed computations.
+
+        Returns:
+            kronecker_factors_unwrapped (KatieKroneckerFactorsUnwrapped): Unwrapped Katie factors.
+        """
+        assert isinstance(kronecker_factors_state, KatieKroneckerFactorsState)
+        return cls(
+            inv_factor_matrices=tuple(
+                map(
+                    unwrapped_tensor_getter,
+                    kronecker_factors_state.inv_factor_matrices,
+                )
+            ),
+            diagonal_preconditioner_list=tuple(
+                map(
+                    unwrapped_tensor_getter,
+                    kronecker_factors_state.diagonal_preconditioner_list,
+                )
+            ),
+            factor_matrices=tuple(
+                map(unwrapped_tensor_getter, kronecker_factors_state.factor_matrices)
+            ),
+            factor_matrix_indices=kronecker_factors_state.factor_matrix_indices,
+            roots=roots,
+            amortized_computation_config=amortized_computation_config,
+            epsilon=epsilon,
+            num_tolerated_failed_amortized_computations=num_tolerated_failed_amortized_computations,
+        )
+
+    @torch.compiler.disable
+    def _amortized_computation(
+        self,
+        bias_corrected_factor_matrix: Tensor,
+        kronecker_factors_iter_dict: dict[str, Any],
+    ) -> tuple[dict[str, Tensor], Exception | None]:
+        """Computes matrix inverse roots for Katie Kronecker preconditioners.
+
+        Args:
+            bias_corrected_factor_matrix (Tensor): The factor matrix after bias correction.
+            kronecker_factors_iter_dict (dict[str, Any]): Dictionary containing inv_factor_matrices and roots.
+
+        Returns:
+            computed_quantities (dict[str, Tensor]): Dictionary with computed inverse factor matrices.
+            exception (Exception | None): Any exception that occurred, or None if successful.
+        """
+        inv_factor_matrix, root = (
+            kronecker_factors_iter_dict["inv_factor_matrices"],
+            kronecker_factors_iter_dict["roots"],
+        )
+
+        try:
+            # Compute inverse preconditioners for Kronecker factors
+            return {
+                "inv_factor_matrices": matrix_inverse_root(
+                    A=bias_corrected_factor_matrix,
+                    root=Fraction(root),
+                    root_inv_config=self.amortized_computation_config,
+                    epsilon=self.epsilon,
+                ).to(dtype=inv_factor_matrix.dtype)
+            }, None
+        except Exception as exception:
+            return {"inv_factor_matrices": inv_factor_matrix}, exception
+
+    def _get_field_dict(self) -> dict[str, Any]:
+        """
+        Creates a dictionary containing shallow copies of this dataclass's fields, excluding diagonal_preconditioner_list.
+
+        Returns:
+            dict[str, Any]: A dictionary mapping field names to their values, excluding diagonal_preconditioner_list.
+        """
+        return {
+            key: value
+            for key, value in super()._get_field_dict().items()
+            if key not in ("diagonal_preconditioner_list",)
+        }
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert (
+            len(self.roots)
+            == len(self.factor_matrices)
+            == len(self.inv_factor_matrices)
+        )
+        assert len(self.diagonal_preconditioner_list) == 1
+
+
 _ShampooKroneckerFactorsStateType = TypeVar(
     "_ShampooKroneckerFactorsStateType",
     RootInvShampooKroneckerFactorsState,
     EigendecomposedShampooKroneckerFactorsState,
     EigenvalueCorrectedShampooKroneckerFactorsState,
+    KatieKroneckerFactorsState,
 )
 _ShampooKroneckerFactorsUnwrappedType = TypeVar(
     "_ShampooKroneckerFactorsUnwrappedType",
     RootInvShampooKroneckerFactorsUnwrapped,
     EigendecomposedShampooKroneckerFactorsUnwrapped,
     EigenvalueCorrectedShampooKroneckerFactorsUnwrapped,
+    KatieKroneckerFactorsUnwrapped,
 )
 
 
@@ -1707,3 +1907,140 @@ class EigenvalueCorrectedShampooPreconditionerList(
             preconditioner_list=kronecker_factors.factor_matrices_eigenvectors,
             dims=([0], [1]),
         )
+
+
+class KatiePreconditionerList(
+    ClassicShampooPreconditionerList[
+        KatieKroneckerFactorsState,
+        KatieKroneckerFactorsUnwrapped,
+    ]
+):
+    """Katie preconditioners for list of parameters.
+
+    Katie combines Kronecker-factored preconditioning (like Shampoo) with diagonal preconditioning
+    (like Adam) in a sequential manner. First applies Kronecker preconditioning, then applies
+    diagonal preconditioning.
+    """
+
+    def __init__(
+        self,
+        block_list: tuple[Tensor, ...],
+        state: Mapping[Tensor, _StateValueType],
+        block_info_list: tuple[BlockInfo, ...],
+        preconditioner_config: KatiePreconditionerConfig,
+        beta2: float = 1.0,
+        weighting_factor: float = 1.0,
+        epsilon: float = 1e-12,
+        use_bias_correction: bool = True,
+    ) -> None:
+        # Initialize base Shampoo preconditioner with Kronecker epsilon
+        super().__init__(
+            block_list=block_list,
+            state=state,
+            block_info_list=block_info_list,
+            preconditioner_config=preconditioner_config,
+            beta2=beta2,
+            weighting_factor=weighting_factor,
+            epsilon=preconditioner_config.kronecker_epsilon,
+            use_bias_correction=use_bias_correction,
+        )
+
+        # Store Katie-specific parameters
+        self._beta2_diagonal = preconditioner_config.beta2
+        self._diagonal_epsilon = preconditioner_config.diagonal_epsilon
+        self._bias_correction2_diagonal: Tensor = torch.tensor(1.0)
+
+        # Initialize diagonal preconditioner lists
+        self._local_diagonal_preconditioner_list: tuple[Tensor, ...] = tuple(
+            kf.diagonal_preconditioner_list[0]
+            for kf in self._local_kronecker_factors_unwrapped
+        )
+        self._masked_diagonal_preconditioner_list: tuple[Tensor, ...] = (
+            self._local_diagonal_preconditioner_list
+        )
+
+    @profile_decorator
+    def update_preconditioners(
+        self,
+        masked_grad_list: tuple[Tensor, ...],
+        step: Tensor,
+        perform_amortized_computation: bool,
+    ) -> None:
+        """
+        Updates both Kronecker and diagonal preconditioners for Katie.
+
+        Args:
+            masked_grad_list (tuple[Tensor, ...]): A list of gradients with their corresponding masks.
+            step (Tensor): The current step.
+            perform_amortized_computation (bool): Whether to perform amortized computation for Kronecker factors.
+
+        Returns:
+            None
+        """
+        # Update Kronecker factors (inherited from BaseShampooPreconditionerList)
+        super().update_preconditioners(
+            masked_grad_list=masked_grad_list,
+            step=step,
+            perform_amortized_computation=perform_amortized_computation,
+        )
+
+        # Update diagonal preconditioners (element-wise second moment)
+        if self._beta2_diagonal != 1.0:
+            torch._foreach_mul_(
+                self._masked_diagonal_preconditioner_list, self._beta2_diagonal
+            )
+
+        torch._foreach_addcmul_(
+            self._masked_diagonal_preconditioner_list,
+            masked_grad_list,
+            masked_grad_list,
+            value=1.0 - self._beta2_diagonal,
+        )
+
+        # Update diagonal bias correction term
+        if self._use_bias_correction and self._beta2_diagonal < 1.0:
+            self._bias_correction2_diagonal = torch.tensor(1.0) - self._beta2_diagonal**step
+
+    @profile_decorator
+    def compress_preconditioner_list(
+        self, local_grad_selector: tuple[bool, ...]
+    ) -> None:
+        super().compress_preconditioner_list(local_grad_selector)
+        self._masked_diagonal_preconditioner_list = compress_list(
+            self._local_diagonal_preconditioner_list, local_grad_selector
+        )
+
+    def _compute_preconditioned_gradient(
+        self,
+        grad: Tensor,
+        preconditioned_dims_selector: tuple[bool, ...],
+        kronecker_factors: KatieKroneckerFactorsUnwrapped,
+    ) -> Tensor:
+        """
+        Applies Katie preconditioning: first Kronecker, then diagonal.
+
+        Args:
+            grad (Tensor): The gradient tensor to be preconditioned.
+            preconditioned_dims_selector (tuple[bool, ...]): Selector for preconditioned dimensions.
+            kronecker_factors (KatieKroneckerFactorsUnwrapped): Katie factors containing both Kronecker and diagonal preconditioners.
+
+        Returns:
+            preconditioned_grad (Tensor): The preconditioned gradient tensor.
+        """
+        # Step 1: Apply Kronecker preconditioning (U_t = L^{-p} @ M_t @ R^{-p})
+        kronecker_preconditioned_grad = self._precondition_grad(
+            grad=grad,
+            preconditioned_dims_selector=preconditioned_dims_selector,
+            preconditioner_list=kronecker_factors.inv_factor_matrices,
+        )
+
+        # Step 2: Apply diagonal preconditioning (element-wise division by sqrt(V_t))
+        # Delta_t = U_t / (sqrt(V_t) + epsilon)
+        diagonal_preconditioner = kronecker_factors.diagonal_preconditioner_list[0]
+        bias_corrected_diagonal = diagonal_preconditioner / self._bias_correction2_diagonal
+
+        preconditioned_grad = kronecker_preconditioned_grad / (
+            torch.sqrt(bias_corrected_diagonal) + self._diagonal_epsilon
+        )
+
+        return preconditioned_grad
